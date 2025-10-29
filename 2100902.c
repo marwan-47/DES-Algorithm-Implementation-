@@ -1,6 +1,9 @@
 #include <stdio.h>
 #include <stdint.h>
+#include <immintrin.h>
 #include <string.h>
+
+#define IO_BUFFER_SIZE (1024 * 1024)
 
 const int IP[64] = {
     58, 50, 42, 34, 26, 18, 10,  2,
@@ -167,7 +170,7 @@ uint64_t key_permutation_pc2(uint64_t combined56){
 
 
 uint32_t left_rotate28(uint32_t value, int shift){
-    value &= 0x0FFFFFFF; // mask to 28 bits
+    value &= 0x0FFFFFFF; 
     return ((value << shift) | (value >> (28 - shift))) & 0x0FFFFFFF;
 }
 
@@ -176,7 +179,7 @@ uint32_t sbox_substitution(uint64_t input48){
     uint32_t output32 = 0;
 
     for (int i = 0; i < 8; i++) {
-        int six_bits = (input48 >> (42 - 6*i)) & 0x3F; // extract 6 bits
+        int six_bits = (input48 >> (42 - 6*i)) & 0x3F; 
         int row = ((six_bits & 0x20) >> 4) | (six_bits & 0x01);
         int col = (six_bits >> 1) & 0x0F;
         int s_val = SBOXES[i][row][col];
@@ -207,7 +210,7 @@ void generate_subkeys(uint64_t key, uint64_t subkeys[16]){
    
 }
 
-void des_encrypt(uint64_t *block, uint64_t subkeys[16]){
+void des_encrypt_block(uint64_t *block, uint64_t subkeys[16]){
     uint64_t data = *block;
     data = initial_permutation(data);
 
@@ -225,7 +228,7 @@ void des_encrypt(uint64_t *block, uint64_t subkeys[16]){
     *block = data;
 }
 
-void des_decrypt(uint64_t *block, uint64_t subkeys[16]){
+void des_decrypt_block(uint64_t *block, uint64_t subkeys[16]){
     uint64_t data = *block;
     data = initial_permutation(data);
 
@@ -244,8 +247,7 @@ void des_decrypt(uint64_t *block, uint64_t subkeys[16]){
 }
 
 
-int main(int argc, char **argv)
-{
+int main(int argc, char **argv){
     if (argc != 5) {
         printf("Usage:\n");
         printf("  %s e key plaintext ciphertext\n", argv[0]);
@@ -275,28 +277,113 @@ int main(int argc, char **argv)
     fclose(fkey);
 
     uint64_t subkeys[16];
+	key = __builtin_bswap64(key);
     generate_subkeys(key, subkeys);
 
+    uint8_t *inbuf = NULL;
+    uint8_t *outbuf = NULL;
+    size_t in_len = 0, out_len = 0;
     uint64_t block;
 
-    if (mode == 'e') {
-        while (fread(&block, sizeof(uint64_t), 1, fin) == 1) {
-            des_encrypt(&block, subkeys);
-            fwrite(&block, sizeof(uint64_t), 1, fout);
-        }
+    /* --- Dynamically allocate the buffers --- */
+    inbuf = (uint8_t *)malloc(IO_BUFFER_SIZE);
+    outbuf = (uint8_t *)malloc(IO_BUFFER_SIZE);
+
+    if (!inbuf || !outbuf) {
+        fprintf(stderr, "Error: failed to allocate I/O buffers\n");
+        free(inbuf);
+        free(outbuf);
+        fclose(fin);
+        fclose(fout);
+        return 1;
     }
-    else if (mode == 'd') {
-        while (fread(&block, sizeof(uint64_t), 1, fin) == 1) {
-            des_decrypt(&block, subkeys);
-            fwrite(&block, sizeof(uint64_t), 1, fout);
+
+    /* --- Determine file size --- */
+    fseek(fin, 0, SEEK_END);
+    long file_size = ftell(fin);
+    rewind(fin);
+
+    /* --- Case 1: Small file (< buffer size) --- */
+    if (file_size > 0 && file_size < IO_BUFFER_SIZE) {
+        in_len = fread(inbuf, 1, file_size, fin);
+        size_t i = 0;
+        while (i + 8 <= in_len) {
+            memcpy(&block, &inbuf[i], 8);
+            block = __builtin_bswap64(block);
+            if (mode == 'e')
+                des_encrypt_block(&block, subkeys);
+            else
+                des_decrypt_block(&block, subkeys);
+            block = __builtin_bswap64(block);
+            memcpy(&outbuf[out_len], &block, 8);
+            out_len += 8;
+            i += 8;
         }
+        if (i < in_len) {
+            size_t rem = in_len - i;
+            uint8_t last_block[8] = {0};
+            memcpy(last_block, &inbuf[i], rem);
+            memcpy(&block, last_block, 8);
+            block = __builtin_bswap64(block);
+            if (mode == 'e')
+                des_encrypt_block(&block, subkeys);
+            else
+                des_decrypt_block(&block, subkeys);
+            block = __builtin_bswap64(block);
+            memcpy(&outbuf[out_len], &block, 8);
+            out_len += 8;
+        }
+        fwrite(outbuf, 1, out_len, fout);
     }
+
+    /* --- Case 2: Large file (>= buffer size) --- */
     else {
-        printf("Invalid mode: use 'e' for encrypt or 'd' for decrypt.\n");
+        while ((in_len = fread(inbuf, 1, IO_BUFFER_SIZE, fin)) > 0) {
+            size_t i = 0;
+            out_len = 0;
+            while (i + 8 <= in_len) {
+                memcpy(&block, &inbuf[i], 8);
+                block = __builtin_bswap64(block);
+                if (mode == 'e')
+                    des_encrypt_block(&block, subkeys);
+                else
+                    des_decrypt_block(&block, subkeys);
+                block = __builtin_bswap64(block);
+                memcpy(&outbuf[out_len], &block, 8);
+                out_len += 8;
+                i += 8;
+            }
+            if (i < in_len) {
+                size_t rem = in_len - i;
+                memmove(inbuf, &inbuf[i], rem);
+                size_t next = fread(&inbuf[rem], 1, IO_BUFFER_SIZE - rem, fin);
+                in_len = rem + next;
+                i = 0;
+                while (i + 8 <= in_len) {
+                    memcpy(&block, &inbuf[i], 8);
+                    block = __builtin_bswap64(block);
+                    if (mode == 'e')
+                        des_encrypt_block(&block, subkeys);
+                    else
+                        des_decrypt_block(&block, subkeys);
+                    block = __builtin_bswap64(block);
+                    memcpy(&outbuf[out_len], &block, 8);
+                    out_len += 8;
+                    i += 8;
+                }
+                memmove(inbuf, &inbuf[i], in_len - i);
+                in_len = in_len - i;
+            }
+            fwrite(outbuf, 1, out_len, fout);
+        }
     }
+
+    /* --- Clean up dynamically allocated buffers --- */
+    free(inbuf);
+    free(outbuf);
 
     fclose(fin);
     fclose(fout);
-
     return 0;
 }
+
