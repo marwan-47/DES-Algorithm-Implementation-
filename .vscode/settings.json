@@ -1,6 +1,7 @@
 {
     "files.associations": {
         "*.dbclient-js": "javascript",
-        "test_generator.C": "cpp"
+        "test_generator.C": "cpp",
+        "stdlib.h": "c"
     }
 }
