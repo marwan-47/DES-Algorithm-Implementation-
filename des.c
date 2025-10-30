@@ -6,7 +6,7 @@
 
 #define IO_BUFFER_SIZE (256 * 1024) 
 
-// Lookup tables for byte-wise permutations
+
 static uint64_t IP_LOOKUP[8][256];
 static uint64_t FP_LOOKUP[8][256];
 static uint64_t E_LOOKUP[4][256];
@@ -143,11 +143,10 @@ const int S8[4][16] = {
 
 const int (*SBOXES[8])[16] = { S1, S2, S3, S4, S5, S6, S7, S8 };
 
-// Initialize lookup tables
+
 void init_tables(void) {
     if (tables_initialized) return;
     
-    // Build IP lookup
     for (int byte_pos = 0; byte_pos < 8; byte_pos++) {
         for (int byte_val = 0; byte_val < 256; byte_val++) {
             uint64_t result = 0;
@@ -166,7 +165,6 @@ void init_tables(void) {
         }
     }
     
-    // Build FP lookup
     for (int byte_pos = 0; byte_pos < 8; byte_pos++) {
         for (int byte_val = 0; byte_val < 256; byte_val++) {
             uint64_t result = 0;
@@ -185,7 +183,6 @@ void init_tables(void) {
         }
     }
     
-    // Build E expansion lookup
     for (int byte_pos = 0; byte_pos < 4; byte_pos++) {
         for (int byte_val = 0; byte_val < 256; byte_val++) {
             uint64_t result = 0;
@@ -203,7 +200,6 @@ void init_tables(void) {
         }
     }
     
-    // Build P permutation lookup
     for (int byte_pos = 0; byte_pos < 4; byte_pos++) {
         for (int byte_val = 0; byte_val < 256; byte_val++) {
             uint32_t result = 0;
@@ -222,7 +218,6 @@ void init_tables(void) {
         }
     }
     
-    // Build SP lookup: for each S-box 6-bit input produce the 32-bit value after S-box and P permutation
     for (int s = 0; s < 8; s++) {
         for (int v = 0; v < 64; v++) {
             int six_bits = v & 0x3F;
@@ -242,7 +237,6 @@ void init_tables(void) {
     tables_initialized = 1;
 }
 
-// Fast cached IP
 static inline uint64_t initial_permutation(uint64_t input) {
     uint8_t *bytes = (uint8_t*)&input;
     return IP_LOOKUP[0][bytes[7]] ^ IP_LOOKUP[1][bytes[6]] ^
@@ -251,7 +245,6 @@ static inline uint64_t initial_permutation(uint64_t input) {
            IP_LOOKUP[6][bytes[1]] ^ IP_LOOKUP[7][bytes[0]];
 }
 
-// Fast cached FP
 static inline uint64_t final_permutation(uint64_t input) {
     uint8_t *bytes = (uint8_t*)&input;
     return FP_LOOKUP[0][bytes[7]] ^ FP_LOOKUP[1][bytes[6]] ^
@@ -260,21 +253,18 @@ static inline uint64_t final_permutation(uint64_t input) {
            FP_LOOKUP[6][bytes[1]] ^ FP_LOOKUP[7][bytes[0]];
 }
 
-// Fast cached E expansion
 static inline uint64_t expansion(uint32_t right_half) {
     uint8_t *bytes = (uint8_t*)&right_half;
     return E_LOOKUP[0][bytes[3]] ^ E_LOOKUP[1][bytes[2]] ^
            E_LOOKUP[2][bytes[1]] ^ E_LOOKUP[3][bytes[0]];
 }
 
-// Fast cached P permutation
 static inline uint32_t permutation_pbox(uint32_t input) {
     uint8_t *bytes = (uint8_t*)&input;
     return P_LOOKUP[0][bytes[3]] ^ P_LOOKUP[1][bytes[2]] ^
            P_LOOKUP[2][bytes[1]] ^ P_LOOKUP[3][bytes[0]];
 }
 
-// Original permute for key schedule
 uint64_t permute(uint64_t input, const int *table, int table_size, int input_size){
     uint64_t output = 0;
     for (int i = 0; i < table_size; i++) {
@@ -290,7 +280,6 @@ static inline uint32_t left_rotate28(uint32_t value, int shift){
     return ((value << shift) | (value >> (28 - shift))) & 0x0FFFFFFF;
 }
 
-// Optimized S-box: unroll the loop
 static inline uint32_t sbox_substitution(uint64_t input48){
     uint32_t output32 = 0;
     int six_bits, row, col, s_val;
@@ -349,7 +338,7 @@ static inline uint32_t sbox_substitution(uint64_t input48){
 static inline uint32_t feistel(uint32_t right, uint64_t subkey){
     uint64_t expand = expansion(right);
     uint64_t x = expand ^ subkey;
-    // combine precomputed SP contributions for each 6-bit chunk
+    
     uint32_t out = 0;
     out  = SP_LOOKUP[0][(x >> 42) & 0x3F];
     out ^= SP_LOOKUP[1][(x >> 36) & 0x3F];
@@ -381,7 +370,6 @@ static inline void des_encrypt_block(uint64_t *block, uint64_t subkeys[16]){
     uint32_t L = (data >> 32);
     uint32_t R = (data & 0xFFFFFFFF);
 
-    // Fully unroll 16 rounds for maximum speed
     uint32_t temp;
     temp = R; R = L ^ feistel(R, subkeys[0]); L = temp;
     temp = R; R = L ^ feistel(R, subkeys[1]); L = temp;
@@ -410,7 +398,7 @@ static inline void des_decrypt_block(uint64_t *block, uint64_t subkeys[16]){
     uint32_t L = (data >> 32);
     uint32_t R = (data & 0xFFFFFFFF);
 
-    // Fully unroll 16 rounds
+    
     uint32_t temp;
     temp = R; R = L ^ feistel(R, subkeys[15]); L = temp;
     temp = R; R = L ^ feistel(R, subkeys[14]); L = temp;
@@ -433,7 +421,7 @@ static inline void des_decrypt_block(uint64_t *block, uint64_t subkeys[16]){
     *block = final_permutation(data);
 }
 
-// forward declaration for bitsliced path
+
 static int bitslice_process_stream(FILE *fin, FILE *fout, uint64_t subkeys[16], char mode);
 
 
@@ -472,7 +460,7 @@ int main(int argc, char **argv){
     key = __builtin_bswap64(key);
     generate_subkeys(key, subkeys);
 
-    // If bitsliced mode requested, use the bitsliced stream processor (64-way)
+    
     if (mode == 'b' || mode == 'B'){
         int rc = bitslice_process_stream(fin, fout, subkeys, mode);
         fclose(fin);
@@ -499,7 +487,7 @@ int main(int argc, char **argv){
         in_len += leftover;
         size_t num_blocks = in_len / 8;
         
-        // Process blocks
+        
         for (size_t i = 0; i < num_blocks; i++) {
             uint64_t block;
             memcpy(&block, &inbuf[i * 8], 8);
@@ -546,11 +534,6 @@ int main(int argc, char **argv){
     return 0;
 }
 
-// -----------------------
-// 64-way bitsliced DES
-// -----------------------
-
-// Prepare subkeys as bitplanes: subkey_bits[round][48] each is either all-ones or zero
 static void prepare_subkey_bitplanes(uint64_t subkeys[16], uint64_t subkey_bits[16][48]){
     for (int r = 0; r < 16; r++){
         for (int i = 0; i < 48; i++){
@@ -560,10 +543,9 @@ static void prepare_subkey_bitplanes(uint64_t subkeys[16], uint64_t subkey_bits[
     }
 }
 
-// Bitsliced S-box: inputs in6[6] are bitplanes (uint64_t), outputs out4[4] are bitplanes
 static void bitsliced_sbox(const int sbox_index, uint64_t in6[6], uint64_t out4[4]){
     out4[0] = out4[1] = out4[2] = out4[3] = 0ULL;
-    // For each possible 6-bit pattern, build mask of lanes that have that pattern
+
     for (int p = 0; p < 64; p++){
         uint64_t m = ~0ULL;
         for (int k = 0; k < 6; k++){
@@ -574,17 +556,15 @@ static void bitsliced_sbox(const int sbox_index, uint64_t in6[6], uint64_t out4[
         int row = ((p & 0x20) >> 4) | (p & 0x01);
         int col = (p >> 1) & 0x0F;
         int sval = SBOXES[sbox_index][row][col] & 0x0F;
-        // map sval bits to source-bit indices as in the scalar implementation
+        
         for (int t = 0; t < 4; t++){
             if ((sval >> t) & 1) {
-                // place into out4: caller will place these into the proper 32-plane array
                 out4[t] |= m;
             }
         }
     }
 }
 
-// Process data in 64-block batches using bitslicing
 static int bitslice_process_stream(FILE *fin, FILE *fout, uint64_t subkeys[16], char mode){
     const size_t BLOCKS = 64;
     uint8_t inbuf[BLOCKS * 8];
@@ -598,17 +578,14 @@ static int bitslice_process_stream(FILE *fin, FILE *fout, uint64_t subkeys[16], 
         size_t blocks = read / 8;
         size_t processed = 0;
 
-        // process full 64-block groups
         while (blocks - processed >= BLOCKS) {
             uint64_t blocks64[BLOCKS];
             for (size_t i = 0; i < BLOCKS; i++){
                 uint64_t tmp; memcpy(&tmp, inbuf + (processed + i) * 8, 8);
                 tmp = __builtin_bswap64(tmp);
-                // apply initial permutation per block
                 blocks64[i] = initial_permutation(tmp);
             }
 
-            // pack into bitplanes: L_bits[32], R_bits[32]
             uint64_t L_bits[32];
             uint64_t R_bits[32];
             for (int j = 0; j < 32; j++){ L_bits[j] = R_bits[j] = 0ULL; }
@@ -623,51 +600,42 @@ static int bitslice_process_stream(FILE *fin, FILE *fout, uint64_t subkeys[16], 
                 }
             }
 
-            // 16 rounds
             for (int r = 0; r < 16; r++){
-                // Expansion: build 48-bit planes E_bits[48]
+
                 uint64_t E_bits[48];
                 for (int i = 0; i < 48; i++){
-                    int src = E[i] - 1; // 0..31
+                    int src = E[i] - 1; 
                     E_bits[i] = R_bits[src];
                 }
 
-                // XOR with subkey bitplanes
                 for (int i = 0; i < 48; i++) E_bits[i] ^= subkey_bits[r][i];
 
-                // S-box layer -> produce 32 planes s_out[32]
                 uint64_t s_out[32]; for (int i=0;i<32;i++) s_out[i]=0ULL;
                 for (int s = 0; s < 8; s++){
                     uint64_t in6[6];
                     for (int k = 0; k < 6; k++) in6[k] = E_bits[6*s + k];
                     uint64_t out4[4]; out4[0]=out4[1]=out4[2]=out4[3]=0ULL;
                     bitsliced_sbox(s, in6, out4);
-                    // map out4[t] to source-bit indices: source_bit indices are (1+4*s) .. (4+4*s)
-                    // t corresponds to bit t of sval (LSB=0). destination index = 4*s + (3 - t)
                     for (int t = 0; t < 4; t++){
                         int dst = 4*s + (3 - t);
                         s_out[dst] = out4[t];
                     }
                 }
 
-                // Apply P permutation: permuted[i] = s_out[P[i]-1]
                 uint64_t permuted[32];
                 for (int i = 0; i < 32; i++){
                     permuted[i] = s_out[P[i] - 1];
                 }
 
-                // Feistel: newR = L ^ permuted; newL = R
                 uint64_t newL[32];
                 uint64_t newR[32];
                 for (int i = 0; i < 32; i++){
                     newL[i] = R_bits[i];
                     newR[i] = L_bits[i] ^ permuted[i];
                 }
-                // swap into L_bits, R_bits
                 for (int i = 0; i < 32; i++){ L_bits[i] = newL[i]; R_bits[i] = newR[i]; }
             }
 
-            // After rounds, combine into blocks and apply final permutation
             for (size_t i = 0; i < BLOCKS; i++){
                 uint32_t L = 0, R = 0;
                 for (int b = 0; b < 32; b++){
@@ -684,7 +652,6 @@ static int bitslice_process_stream(FILE *fin, FILE *fout, uint64_t subkeys[16], 
             processed += BLOCKS;
         }
 
-        // write leftover processed blocks from this chunk using scalar path
         for (size_t i = 0; i < blocks - processed; i++){
             uint64_t block; memcpy(&block, inbuf + (processed + i) * 8, 8);
             block = __builtin_bswap64(block);
@@ -695,7 +662,6 @@ static int bitslice_process_stream(FILE *fin, FILE *fout, uint64_t subkeys[16], 
         }
         fwrite(outbuf, 1, (blocks - processed) * 8, fout);
 
-        // handle if we read partial block into buffer tail: move it to beginning
         size_t leftover = read - (blocks * 8);
         if (leftover) memmove((void*)inbuf, inbuf + blocks * 8, leftover);
         // seek back in file accordingly
